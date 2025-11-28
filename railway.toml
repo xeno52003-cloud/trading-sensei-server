@@ -1,0 +1,12 @@
+# 🥷 Trading Sensei - Railway Deployment
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT webhook_server:app"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 10
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
