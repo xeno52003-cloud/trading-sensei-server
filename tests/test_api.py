@@ -58,15 +58,31 @@ def test_ea_heartbeat_updates_status(client, ea_headers, auth_headers):
 
 
 def test_ea_command_round_trip(client, ea_headers, auth_headers):
-    """App sends a command; the next EA heartbeat picks it up exactly once."""
-    res = client.post("/api/ea/start", headers=auth_headers)
-    assert res.status_code == 200
+    """App sends commands; the next EA heartbeat drains them exactly once."""
+    client.post("/api/ea/start", headers=auth_headers)
 
     first = client.post("/webhook/ea/heartbeat", headers=ea_headers, json={}).get_json()
-    assert first["command"]["action"] == "start"
+    assert [c["action"] for c in first["commands"]] == ["start"]
 
     second = client.post("/webhook/ea/heartbeat", headers=ea_headers, json={}).get_json()
-    assert second["command"] is None
+    assert second["commands"] == []
+
+
+def test_trade_actions_queue_for_ea(client, ea_headers, auth_headers):
+    """Close, close-all, and modify all enqueue commands the EA can poll for."""
+    client.post("/webhook/ea/trade/open",
+                headers=ea_headers,
+                json={"ticket": "Q1", "symbol": "XAUUSD", "type": "BUY",
+                      "lots": 0.1, "entry": 2050, "signal": 5})
+
+    client.post("/api/trades/Q1/close", headers=auth_headers)
+    client.put("/api/trades/Q1/modify", headers=auth_headers,
+               json={"sl": 2045, "tp": 2080})
+    client.post("/api/trades/close-all", headers=auth_headers)
+
+    drained = client.post("/webhook/ea/heartbeat", headers=ea_headers, json={}).get_json()
+    actions = [c["action"] for c in drained["commands"]]
+    assert actions == ["close_trade", "modify_trade", "close_all"]
 
 
 def test_invalid_ea_action_rejected(client, auth_headers):

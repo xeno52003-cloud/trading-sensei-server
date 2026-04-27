@@ -131,16 +131,18 @@ class AppState:
     def get_device_tokens(self) -> dict[str, Any]:
         return self.store.get("device_tokens", {})
 
-    # --- ea command (transient) ---
+    # --- ea command queue (consumed by EA on heartbeat) ---
 
-    def set_ea_command(self, command: dict[str, Any]) -> None:
-        self.store.set("ea_command", command)
+    def enqueue_ea_command(self, command: dict[str, Any]) -> None:
+        queue = self.store.get("ea_commands", [])
+        queue.append(command)
+        self.store.set("ea_commands", queue)
 
-    def pop_ea_command(self) -> Optional[dict[str, Any]]:
-        command = self.store.get("ea_command")
-        if command is not None:
-            self.store.delete("ea_command")
-        return command
+    def drain_ea_commands(self) -> list[dict[str, Any]]:
+        queue = self.store.get("ea_commands", [])
+        if queue:
+            self.store.set("ea_commands", [])
+        return queue
 
 
 def new_alert(title: str, message: str, alert_type: str) -> dict[str, Any]:

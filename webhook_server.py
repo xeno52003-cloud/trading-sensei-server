@@ -244,7 +244,7 @@ def control_ea(action: str):
         "timestamp": datetime.utcnow().isoformat(),
         "user_id": g.user_id,
     }
-    state.set_ea_command(command)
+    state.enqueue_ea_command(command)
     socketio.emit("ea_command", command, room="ea")
     logger.info("EA command: %s by user %s", action, g.user_id)
 
@@ -288,6 +288,7 @@ def close_trade(trade_id: str):
         "timestamp": datetime.utcnow().isoformat(),
         "user_id": g.user_id,
     }
+    state.enqueue_ea_command(command)
     socketio.emit("trade_command", command, room="ea")
     logger.info("Close trade command: %s by user %s", trade_id, g.user_id)
     return jsonify({"success": True, "message": f"Close command sent for trade {trade_id}"})
@@ -303,6 +304,7 @@ def close_all_trades():
         "timestamp": datetime.utcnow().isoformat(),
         "user_id": g.user_id,
     }
+    state.enqueue_ea_command(command)
     socketio.emit("trade_command", command, room="ea")
 
     send_alert(
@@ -334,6 +336,7 @@ def modify_trade(trade_id: str):
         "timestamp": datetime.utcnow().isoformat(),
         "user_id": g.user_id,
     }
+    state.enqueue_ea_command(command)
     socketio.emit("trade_command", command, room="ea")
     return jsonify({"success": True, "message": f"Modify command sent for trade {trade_id}"})
 
@@ -395,7 +398,7 @@ def ea_heartbeat():
         uptime=data.get("uptime", 0),
         version=data.get("version", "2.0.0"),
     )
-    return jsonify({"success": True, "command": state.pop_ea_command()})
+    return jsonify({"success": True, "commands": state.drain_ea_commands()})
 
 
 @app.route("/webhook/ea/account", methods=["POST"])

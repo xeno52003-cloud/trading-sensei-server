@@ -61,8 +61,11 @@ def test_mark_alerts_read():
     assert by_id["b"]["read"] is False
 
 
-def test_pop_ea_command_clears_after_read():
+def test_drain_ea_commands_clears_queue():
     state = AppState(InMemoryStateStore())
-    state.set_ea_command({"action": "start"})
-    assert state.pop_ea_command() == {"action": "start"}
-    assert state.pop_ea_command() is None
+    state.enqueue_ea_command({"action": "start"})
+    state.enqueue_ea_command({"action": "close_all"})
+
+    drained = state.drain_ea_commands()
+    assert [c["action"] for c in drained] == ["start", "close_all"]
+    assert state.drain_ea_commands() == []
