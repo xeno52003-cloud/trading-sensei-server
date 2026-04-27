@@ -15,13 +15,50 @@ def test_login_rejects_short_pin(client):
     assert res.status_code == 401
 
 
-def test_login_returns_token_for_six_digit_pin(client):
+def test_login_rejects_wrong_pin(client):
+    res = client.post("/api/auth/login", json={"pin": "999999"})
+    assert res.status_code == 401
+    assert res.get_json()["error"] == "Invalid PIN"
+
+
+def test_login_returns_token_for_correct_pin(client):
     res = client.post("/api/auth/login",
-                      json={"pin": "123456", "device_id": "dev1", "user_id": "u1"})
+                      json={"pin": "123456", "device_id": "dev1"})
     assert res.status_code == 200
     body = res.get_json()
     assert body["success"] is True
     assert body["token"]
+
+
+def test_login_unknown_user_rejected(client):
+    res = client.post("/api/auth/login", json={"pin": "123456", "user_id": "nobody"})
+    assert res.status_code == 401
+
+
+def test_lockout_after_repeated_failures(client):
+    for _ in range(5):
+        client.post("/api/auth/login", json={"pin": "000000"})
+    res = client.post("/api/auth/login", json={"pin": "123456"})  # correct PIN now blocked
+    assert res.status_code == 401
+    assert "Too many" in res.get_json()["error"]
+
+
+def test_change_pin_flow(client):
+    login = client.post("/api/auth/login", json={"pin": "123456"}).get_json()
+    headers = {"Authorization": f"Bearer {login['token']}"}
+
+    bad = client.post("/api/auth/change-pin", headers=headers,
+                      json={"current_pin": "999999", "new_pin": "654321"})
+    assert bad.status_code == 400
+
+    good = client.post("/api/auth/change-pin", headers=headers,
+                       json={"current_pin": "123456", "new_pin": "654321"})
+    assert good.status_code == 200
+
+    old = client.post("/api/auth/login", json={"pin": "123456"})
+    assert old.status_code == 401
+    new = client.post("/api/auth/login", json={"pin": "654321"})
+    assert new.status_code == 200
 
 
 def test_protected_route_requires_token(client):

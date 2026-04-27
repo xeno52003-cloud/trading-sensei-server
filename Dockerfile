@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
-COPY webhook_server.py state_store.py app_state.py analytics.py ./
+COPY webhook_server.py state_store.py app_state.py analytics.py users.py ./
 COPY static ./static
 
 # Environment

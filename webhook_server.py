@@ -26,7 +26,9 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 
 import analytics
 from app_state import AppState, new_alert
+from oanda_client import OandaClient
 from state_store import create_state_store
+from users import UserStore, bootstrap_admin
 
 
 # ============================================
@@ -55,6 +57,8 @@ class Config:
 
     STARTING_BALANCE = float(os.environ.get("STARTING_BALANCE", "10000"))
 
+    ADMIN_PIN = os.environ.get("ADMIN_PIN", "")
+
 
 # ============================================
 # 🚀 APP SETUP
@@ -73,7 +77,12 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 limiter = Limiter(app=app, key_func=get_remote_address, default_limits=[Config.RATE_LIMIT])
 
-state = AppState(create_state_store(Config.REDIS_URL))
+_state_store = create_state_store(Config.REDIS_URL)
+state = AppState(_state_store)
+users = UserStore(_state_store)
+bootstrap_admin(users, Config.ADMIN_PIN)
+
+oanda = OandaClient(Config.OANDA_API_URL, Config.OANDA_ACCOUNT_ID, Config.OANDA_API_TOKEN)
 
 
 # ============================================
@@ -161,12 +170,14 @@ def health_check():
 @limiter.limit("10 per minute")
 def login():
     data = request.get_json(silent=True) or {}
-    user_id = data.get("user_id", "default")
+    user_id = data.get("user_id", "admin")
     device_id = data.get("device_id", "unknown")
     pin = data.get("pin", "")
 
-    if len(pin) != 6 or not pin.isdigit():
-        return jsonify({"error": "Invalid PIN"}), 401
+    ok, err = users.verify(user_id, pin)
+    if not ok:
+        logger.info("Failed login: user=%s device=%s reason=%s", user_id, device_id, err)
+        return jsonify({"error": err or "Invalid PIN"}), 401
 
     token = generate_jwt(user_id, device_id)
     logger.info("User %s logged in from device %s", user_id, device_id)
@@ -175,6 +186,17 @@ def login():
         "token": token,
         "expires_in": Config.JWT_EXPIRY_HOURS * 3600,
     })
+
+
+@app.route("/api/auth/change-pin", methods=["POST"])
+@require_auth
+def change_pin():
+    data = request.get_json(silent=True) or {}
+    ok, err = users.change_pin(g.user_id, data.get("current_pin", ""), data.get("new_pin", ""))
+    if not ok:
+        return jsonify({"error": err}), 400
+    logger.info("User %s changed PIN", g.user_id)
+    return jsonify({"success": True})
 
 
 @app.route("/api/auth/refresh", methods=["POST"])
@@ -207,6 +229,7 @@ def get_status():
         "ea_connected": ea_connected,
         "ea_running": bool(ea.get("running")),
         "last_heartbeat": last_hb,
+        "oanda_configured": oanda.configured,
         "connected_devices": len(state.connected_devices),
         "timestamp": datetime.utcnow().isoformat(),
     })
@@ -350,6 +373,44 @@ def analytics_summary():
         "summary": analytics.summary(state.get_trades(), starting_balance),
         "timestamp": datetime.utcnow().isoformat(),
     })
+
+
+@app.route("/api/oanda/account", methods=["GET"])
+@require_auth
+def oanda_account():
+    if not oanda.configured:
+        return jsonify({"error": "OANDA not configured"}), 503
+    try:
+        return jsonify({"success": True, "account": oanda.account_summary()})
+    except requests.RequestException as e:
+        logger.error("OANDA account error: %s", e)
+        return jsonify({"error": "OANDA request failed"}), 502
+
+
+@app.route("/api/oanda/trades", methods=["GET"])
+@require_auth
+def oanda_trades():
+    if not oanda.configured:
+        return jsonify({"error": "OANDA not configured"}), 503
+    try:
+        trades = oanda.open_trades()
+        return jsonify({"success": True, "count": len(trades), "trades": trades})
+    except requests.RequestException as e:
+        logger.error("OANDA trades error: %s", e)
+        return jsonify({"error": "OANDA request failed"}), 502
+
+
+@app.route("/api/oanda/pricing", methods=["GET"])
+@require_auth
+def oanda_pricing():
+    if not oanda.configured:
+        return jsonify({"error": "OANDA not configured"}), 503
+    instruments = request.args.get("instruments", "XAU_USD").split(",")
+    try:
+        return jsonify({"success": True, "prices": oanda.pricing(instruments)})
+    except requests.RequestException as e:
+        logger.error("OANDA pricing error: %s", e)
+        return jsonify({"error": "OANDA request failed"}), 502
 
 
 @app.route("/api/alerts", methods=["GET"])

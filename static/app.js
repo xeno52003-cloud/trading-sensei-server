@@ -170,6 +170,17 @@ async function refreshAll() {
     state.alerts = alerts.alerts;
     state.ea = status;
     state.summary = summary.summary;
+
+    // Fallback to OANDA REST when the EA isn't pushing state
+    if (!status.ea_connected && status.oanda_configured) {
+      const [oa, ot] = await Promise.allSettled([
+        api("/api/oanda/account"),
+        api("/api/oanda/trades"),
+      ]);
+      if (oa.status === "fulfilled") state.account = oa.value.account;
+      if (ot.status === "fulfilled") state.trades = ot.value.trades;
+    }
+
     renderTab();
   } catch (e) {
     if (e.message !== "unauthorized") toast(e.message, "error");
@@ -245,10 +256,14 @@ function renderShell() {
     el("button", { class: "pin-key", style: "width:40px;height:40px;font-size:16px;", onclick: logout, title: "Sign out" }, "⏻")
   ));
 
-  const dot = state.ea?.ea_connected ? "online" : "";
-  const label = state.ea?.ea_connected
-    ? `Connected • EA ${state.ea.ea_running ? "running" : "paused"}`
-    : "EA disconnected";
+  const eaUp = state.ea?.ea_connected;
+  const oandaUp = !eaUp && state.ea?.oanda_configured;
+  const dot = eaUp || oandaUp ? "online" : "";
+  const label = eaUp
+    ? `EA ${state.ea.ea_running ? "running" : "paused"}`
+    : oandaUp
+    ? "OANDA REST (read-only)"
+    : "Disconnected";
   root.appendChild(el("div", { class: "conn-status" },
     el("div", { class: `conn-dot ${dot}` }),
     el("span", {}, label)
