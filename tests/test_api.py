@@ -206,6 +206,68 @@ def test_websocket_join_accepts_valid_token(server):
     assert "initial_state" in kinds
 
 
+def test_telegram_webhook_rejects_wrong_secret(server):
+    server.app.config["TESTING"] = True
+    server.Config.TELEGRAM_WEBHOOK_SECRET = "shh"
+    with server.app.test_client() as c:
+        bad = c.post("/webhook/telegram/wrong", json={})
+        assert bad.status_code == 403
+
+
+def test_telegram_webhook_dispatches_to_handler(server, monkeypatch):
+    server.app.config["TESTING"] = True
+    server.Config.TELEGRAM_WEBHOOK_SECRET = "shh"
+
+    sent = []
+    monkeypatch.setattr(server.telegram, "send", lambda chat, text: sent.append((chat, text)))
+    server.telegram.allowed_chat_id = "111"
+
+    with server.app.test_client() as c:
+        res = c.post("/webhook/telegram/shh", json={
+            "message": {"chat": {"id": 111}, "text": "/status"}
+        })
+        assert res.status_code == 200
+
+    assert sent and "EA" in sent[0][1]
+
+
+def test_oanda_import_history_writes_to_sqlite(server):
+    server.app.config["TESTING"] = True
+    server.oanda.base_url = "https://api-fxpractice.oanda.com"
+    server.oanda.account_id = "001-001"
+    server.oanda.token = "tok"
+
+    from unittest.mock import patch
+    response = {
+        "trades": [
+            {
+                "id": "200", "instrument": "XAU_USD", "initialUnits": "100",
+                "price": "2050.0", "averageClosePrice": "2055.0",
+                "realizedPL": "5.0", "openTime": "2026-01-01T00:00:00Z",
+                "closeTime": "2026-01-02T00:00:00Z",
+            }
+        ]
+    }
+
+    class FakeRes:
+        def raise_for_status(self): pass
+        def json(self): return response
+
+    with server.app.test_client() as c:
+        token = c.post("/api/auth/login", json={"pin": "123456"}).get_json()["token"]
+        with patch("oanda_client.requests.get", return_value=FakeRes()):
+            res = c.post("/api/oanda/import-history",
+                         headers={"Authorization": f"Bearer {token}"})
+        assert res.status_code == 200
+        assert res.get_json()["imported"] == 1
+
+        history_res = c.get("/api/trades/history",
+                            headers={"Authorization": f"Bearer {token}"}).get_json()
+        assert history_res["count"] == 1
+        assert history_res["trades"][0]["id"] == "200"
+        assert history_res["trades"][0]["pnl"] == 5.0
+
+
 def test_alerts_endpoint(client, ea_headers, auth_headers):
     client.post("/webhook/ea/trade/open",
                 headers=ea_headers,

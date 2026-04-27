@@ -104,6 +104,42 @@ def test_pricing_computes_mid_and_spread(client):
     assert prices[0]["spread"] == round(1.0852 - 1.0850, 5)
 
 
+def test_closed_trades_normalises_realized_pnl(client):
+    response = {
+        "trades": [
+            {
+                "id": "100",
+                "instrument": "XAU_USD",
+                "initialUnits": "100",          # BUY
+                "price": "2050.0",
+                "averageClosePrice": "2060.0",
+                "realizedPL": "10.0",
+                "openTime": "2026-01-01T00:00:00Z",
+                "closeTime": "2026-01-02T00:00:00Z",
+            },
+            {
+                "id": "101",
+                "instrument": "EUR_USD",
+                "initialUnits": "-1000",        # SELL
+                "price": "1.10",
+                "averageClosePrice": "1.09",
+                "realizedPL": "10.0",
+                "openTime": "2026-01-01T00:00:00Z",
+                "closeTime": "2026-01-02T00:00:00Z",
+            },
+        ]
+    }
+    with patch("oanda_client.requests.get", return_value=_ok(response)) as m:
+        trades = client.closed_trades()
+
+    assert "state=CLOSED" in m.call_args.args[0]
+    assert trades[0]["type"] == "BUY"
+    assert trades[0]["status"] == "CLOSED"
+    assert trades[0]["close_price"] == 2060.0
+    assert trades[0]["pnl"] == 10.0
+    assert trades[1]["type"] == "SELL"
+
+
 def test_pricing_with_no_instruments_skips_request(client):
     with patch("oanda_client.requests.get") as m:
         assert client.pricing([]) == []

@@ -26,6 +26,7 @@ from flask_socketio import SocketIO, disconnect, emit, join_room, leave_room
 
 import analytics
 import oanda_poller
+import telegram_bot
 from app_state import AppState, new_alert
 from oanda_client import OandaClient
 from state_store import create_state_store
@@ -63,6 +64,9 @@ class Config:
 
     DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///data/trades.db")
 
+    # Random secret in the Telegram webhook URL — only Telegram and the user know it.
+    TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+
 
 # ============================================
 # 🚀 APP SETUP
@@ -79,7 +83,12 @@ app.config.from_object(Config)
 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
-limiter = Limiter(app=app, key_func=get_remote_address, default_limits=[Config.RATE_LIMIT])
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=[Config.RATE_LIMIT],
+    storage_uri=Config.REDIS_URL or "memory://",
+)
 
 _state_store = create_state_store(Config.REDIS_URL)
 state = AppState(_state_store)
@@ -88,6 +97,9 @@ bootstrap_admin(users, Config.ADMIN_PIN)
 
 history = open_history(Config.DATABASE_URL)
 oanda = OandaClient(Config.OANDA_API_URL, Config.OANDA_ACCOUNT_ID, Config.OANDA_API_TOKEN)
+
+telegram = telegram_bot.TelegramBot(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
+telegram_handlers = telegram_bot.build_handlers(state, history, oanda, state.enqueue_ea_command)
 
 
 # ============================================
@@ -406,6 +418,23 @@ def oanda_trades():
         return jsonify({"error": "OANDA request failed"}), 502
 
 
+@app.route("/api/oanda/import-history", methods=["POST"])
+@require_auth
+def oanda_import_history():
+    if not oanda.configured:
+        return jsonify({"error": "OANDA not configured"}), 503
+    count = request.args.get("count", 500, type=int)
+    try:
+        before = history.count()
+        for trade in oanda.closed_trades(count):
+            history.record_close(trade)
+        imported = history.count() - before
+        return jsonify({"success": True, "imported": imported, "total": history.count()})
+    except requests.RequestException as e:
+        logger.error("OANDA import error: %s", e)
+        return jsonify({"error": "OANDA request failed"}), 502
+
+
 @app.route("/api/oanda/pricing", methods=["GET"])
 @require_auth
 def oanda_pricing():
@@ -450,6 +479,15 @@ def register_device():
 # ============================================
 # 🤖 EA WEBHOOKS
 # ============================================
+
+
+@app.route("/webhook/telegram/<secret>", methods=["POST"])
+def telegram_webhook(secret: str):
+    if not Config.TELEGRAM_WEBHOOK_SECRET or not hmac.compare_digest(secret, Config.TELEGRAM_WEBHOOK_SECRET):
+        return jsonify({"error": "Forbidden"}), 403
+    update = request.get_json(silent=True) or {}
+    telegram_bot.handle_update(telegram, update, telegram_handlers)
+    return jsonify({"ok": True})
 
 
 @app.route("/webhook/ea/heartbeat", methods=["POST"])

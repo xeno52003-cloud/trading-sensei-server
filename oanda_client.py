@@ -60,6 +60,11 @@ class OandaClient:
         body = self._get(f"/v3/accounts/{self.account_id}/openTrades")
         return [_normalise_trade(t) for t in body.get("trades", [])]
 
+    def closed_trades(self, count: int = 500) -> list[dict[str, Any]]:
+        """Most-recent closed trades, normalised to our internal schema."""
+        body = self._get(f"/v3/accounts/{self.account_id}/trades?state=CLOSED&count={count}")
+        return [_normalise_closed_trade(t) for t in body.get("trades", [])]
+
     def pricing(self, instruments: list[str]) -> list[dict[str, Any]]:
         if not instruments:
             return []
@@ -116,4 +121,28 @@ def _normalise_trade(t: dict[str, Any]) -> dict[str, Any]:
         "status": "OPEN",
         "signal_strength": 0,
         "source": "oanda",
+    }
+
+
+def _normalise_closed_trade(t: dict[str, Any]) -> dict[str, Any]:
+    initial_units = _f(t.get("initialUnits"))
+    side = "BUY" if initial_units > 0 else "SELL"
+    entry = _f(t.get("price"))
+    close_price = _f(t.get("averageClosePrice")) or entry
+    return {
+        "id": str(t.get("id", "")),
+        "symbol": t.get("instrument", ""),
+        "type": side,
+        "lots": round(abs(initial_units) / 100_000, 2),
+        "entry_price": entry,
+        "current_price": close_price,
+        "close_price": close_price,
+        "stop_loss": _f((t.get("stopLossOrder") or {}).get("price")),
+        "take_profit": _f((t.get("takeProfitOrder") or {}).get("price")),
+        "pnl": round(_f(t.get("realizedPL")), 2),
+        "pips": 0.0,
+        "open_time": t.get("openTime"),
+        "close_time": t.get("closeTime"),
+        "status": "CLOSED",
+        "signal_strength": 0,
     }
