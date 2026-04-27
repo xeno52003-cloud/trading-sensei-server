@@ -9,6 +9,7 @@ os.environ.setdefault("EA_SECRET", "test-ea-secret")
 os.environ.setdefault("ADMIN_PIN", "123456")
 os.environ.setdefault("DATABASE_URL", "sqlite://:memory:")
 os.environ.setdefault("DISABLE_OANDA_POLLER", "1")
+os.environ.setdefault("DISABLE_EA_WATCHDOG", "1")
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 

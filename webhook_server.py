@@ -25,6 +25,7 @@ from flask_limiter.util import get_remote_address
 from flask_socketio import SocketIO, disconnect, emit, join_room, leave_room
 
 import analytics
+import ea_watchdog
 import oanda_poller
 import telegram_bot
 from app_state import AppState, new_alert
@@ -72,6 +73,10 @@ class Config:
     RISK_DAILY_LOSS_PCT = float(os.environ.get("RISK_DAILY_LOSS_PCT", "5.0"))
     RISK_MAX_DRAWDOWN_PCT = float(os.environ.get("RISK_MAX_DRAWDOWN_PCT", "20.0"))
     RISK_MAX_CONSECUTIVE_LOSSES = int(os.environ.get("RISK_MAX_CONSECUTIVE_LOSSES", "5"))
+
+    # EA disconnect watchdog
+    EA_DISCONNECT_ALERT_AFTER_SEC = int(os.environ.get("EA_DISCONNECT_ALERT_AFTER_SEC", "60"))
+    EA_WATCHDOG_CHECK_INTERVAL_SEC = int(os.environ.get("EA_WATCHDOG_CHECK_INTERVAL_SEC", "15"))
 
 
 # ============================================
@@ -834,6 +839,14 @@ def _account_synced(account: dict[str, Any]) -> None:
 
 if os.environ.get("DISABLE_OANDA_POLLER") != "1":
     oanda_poller.start(oanda, state, _account_synced)
+
+if os.environ.get("DISABLE_EA_WATCHDOG") != "1":
+    ea_watchdog.start(
+        state,
+        on_alert=send_alert,
+        disconnect_after_sec=Config.EA_DISCONNECT_ALERT_AFTER_SEC,
+        check_interval=Config.EA_WATCHDOG_CHECK_INTERVAL_SEC,
+    )
 
 
 if __name__ == "__main__":
