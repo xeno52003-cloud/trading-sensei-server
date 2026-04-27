@@ -10,7 +10,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
-COPY webhook_server.py .
+COPY webhook_server.py state_store.py app_state.py analytics.py ./
+COPY static ./static
 
 # Environment
 ENV PORT=5000
