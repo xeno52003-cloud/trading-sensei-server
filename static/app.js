@@ -190,7 +190,8 @@ async function refreshAll() {
 function connectSocket() {
   if (typeof io === "undefined") return;
   state.socket = io({ transports: ["websocket", "polling"] });
-  state.socket.on("connect", () => state.socket.emit("join_app", {}));
+  state.socket.on("connect", () => state.socket.emit("join_app", { token: state.token }));
+  state.socket.on("auth_error", () => logout());
   state.socket.on("initial_state", (data) => {
     state.account = data.account;
     state.trades = data.trades;

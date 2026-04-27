@@ -22,12 +22,14 @@ from flask import Flask, g, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask_socketio import SocketIO, disconnect, emit, join_room, leave_room
 
 import analytics
+import oanda_poller
 from app_state import AppState, new_alert
 from oanda_client import OandaClient
 from state_store import create_state_store
+from trade_history import open_history
 from users import UserStore, bootstrap_admin
 
 
@@ -59,6 +61,8 @@ class Config:
 
     ADMIN_PIN = os.environ.get("ADMIN_PIN", "")
 
+    DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///data/trades.db")
+
 
 # ============================================
 # 🚀 APP SETUP
@@ -82,6 +86,7 @@ state = AppState(_state_store)
 users = UserStore(_state_store)
 bootstrap_admin(users, Config.ADMIN_PIN)
 
+history = open_history(Config.DATABASE_URL)
 oanda = OandaClient(Config.OANDA_API_URL, Config.OANDA_ACCOUNT_ID, Config.OANDA_API_TOKEN)
 
 
@@ -290,7 +295,7 @@ def get_trades():
 @require_auth
 def get_trade_history():
     limit = request.args.get("limit", 50, type=int)
-    closed = state.get_closed_trades(limit)
+    closed = history.list_closed(limit)
     return jsonify({
         "success": True,
         "count": len(closed),
@@ -368,9 +373,10 @@ def modify_trade(trade_id: str):
 @require_auth
 def analytics_summary():
     starting_balance = request.args.get("starting_balance", Config.STARTING_BALANCE, type=float)
+    trades = history.all_closed() + state.get_open_trades()
     return jsonify({
         "success": True,
-        "summary": analytics.summary(state.get_trades(), starting_balance),
+        "summary": analytics.summary(trades, starting_balance),
         "timestamp": datetime.utcnow().isoformat(),
     })
 
@@ -546,6 +552,8 @@ def ea_trade_closed():
     if not trade:
         return jsonify({"success": False, "error": "Trade not found"}), 404
 
+    history.record_close(trade)
+
     is_profit = pnl >= 0
     alert = new_alert(
         title=f"{'✅' if is_profit else '❌'} Closed {'+' if is_profit else ''}${pnl:.2f}",
@@ -698,7 +706,15 @@ def handle_disconnect():
 
 
 @socketio.on("join_app")
-def handle_join_app(_data):
+def handle_join_app(data):
+    token = (data or {}).get("token", "")
+    payload = verify_jwt(token)
+    if not payload:
+        logger.warning("Rejected app socket %s: invalid token", request.sid)
+        emit("auth_error", {"message": "Invalid or expired token"})
+        disconnect()
+        return
+
     join_room("app")
     state.connected_devices.add(request.sid)
     emit("initial_state", {
@@ -707,7 +723,7 @@ def handle_join_app(_data):
         "trades": state.get_open_trades(),
         "alerts": state.get_alerts(10),
     })
-    logger.info("App joined: %s", request.sid)
+    logger.info("App joined: %s (user=%s)", request.sid, payload["user_id"])
 
 
 @socketio.on("join_ea")
@@ -731,6 +747,14 @@ def handle_leave_ea():
 # ============================================
 # 🚀 MAIN
 # ============================================
+
+
+def _socket_emit(event: str, payload: Any) -> None:
+    socketio.emit(event, payload, room="app")
+
+
+if os.environ.get("DISABLE_OANDA_POLLER") != "1":
+    oanda_poller.start(oanda, state, _socket_emit)
 
 
 if __name__ == "__main__":

@@ -163,6 +163,49 @@ def test_close_trade_404_for_unknown_id(client, auth_headers):
     assert res.status_code == 404
 
 
+def test_history_persists_through_a_restart(server, ea_headers, auth_headers):
+    """Closed trades survive even though state.trades is wiped."""
+    server.app.config["TESTING"] = True
+    with server.app.test_client() as c:
+        c.post("/webhook/ea/trade/open",
+               headers=ea_headers,
+               json={"ticket": "P1", "symbol": "XAUUSD", "type": "BUY",
+                     "lots": 0.1, "entry": 2050})
+        c.post("/webhook/ea/trade/close",
+               headers=ea_headers,
+               json={"ticket": "P1", "pnl": 25.0, "close_price": 2055})
+
+        # simulate a restart: blow away the in-memory state but keep history (sqlite)
+        server.state.store.set("trades", [])
+
+        history_resp = c.get("/api/trades/history", headers=auth_headers).get_json()
+        assert history_resp["count"] == 1
+        assert history_resp["trades"][0]["id"] == "P1"
+
+        analytics_resp = c.get("/api/analytics/summary", headers=auth_headers).get_json()
+        assert analytics_resp["summary"]["total_trades"] == 1
+        assert analytics_resp["summary"]["total_pnl"] == 25.0
+
+
+def test_websocket_join_rejects_missing_token(server):
+    server.app.config["TESTING"] = True
+    sio = server.socketio.test_client(server.app)
+    sio.emit("join_app", {})
+    # Server emits auth_error then disconnects — disconnect is the contract,
+    # the client simply can't read after it. Confirm via state side-effect.
+    assert sio.is_connected() is False
+
+
+def test_websocket_join_accepts_valid_token(server):
+    server.app.config["TESTING"] = True
+    token = server.generate_jwt("test", "dev")
+    sio = server.socketio.test_client(server.app)
+    sio.emit("join_app", {"token": token})
+    received = sio.get_received()
+    kinds = {pkt["name"] for pkt in received}
+    assert "initial_state" in kinds
+
+
 def test_alerts_endpoint(client, ea_headers, auth_headers):
     client.post("/webhook/ea/trade/open",
                 headers=ea_headers,

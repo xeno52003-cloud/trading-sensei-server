@@ -10,8 +10,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
-COPY webhook_server.py state_store.py app_state.py analytics.py users.py ./
+COPY webhook_server.py state_store.py app_state.py analytics.py users.py \
+     oanda_client.py trade_history.py ./
 COPY static ./static
+
+# SQLite ledger lives here — mount a volume in production.
+RUN mkdir -p /app/data
+VOLUME ["/app/data"]
 
 # Environment
 ENV PORT=5000
