@@ -28,6 +28,7 @@ import analytics
 import oanda_poller
 import telegram_bot
 from app_state import AppState, new_alert
+from circuit_breaker import BreakerConfig, CircuitBreaker
 from oanda_client import OandaClient
 from state_store import create_state_store
 from trade_history import open_history
@@ -67,6 +68,11 @@ class Config:
     # Random secret in the Telegram webhook URL — only Telegram and the user know it.
     TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
 
+    # Risk circuit breaker — set any threshold to 0 to disable.
+    RISK_DAILY_LOSS_PCT = float(os.environ.get("RISK_DAILY_LOSS_PCT", "5.0"))
+    RISK_MAX_DRAWDOWN_PCT = float(os.environ.get("RISK_MAX_DRAWDOWN_PCT", "20.0"))
+    RISK_MAX_CONSECUTIVE_LOSSES = int(os.environ.get("RISK_MAX_CONSECUTIVE_LOSSES", "5"))
+
 
 # ============================================
 # 🚀 APP SETUP
@@ -100,6 +106,13 @@ oanda = OandaClient(Config.OANDA_API_URL, Config.OANDA_ACCOUNT_ID, Config.OANDA_
 
 telegram = telegram_bot.TelegramBot(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
 telegram_handlers = telegram_bot.build_handlers(state, history, oanda, state.enqueue_ea_command)
+
+breaker = CircuitBreaker(state, history, BreakerConfig(
+    daily_loss_pct=Config.RISK_DAILY_LOSS_PCT,
+    max_drawdown_pct=Config.RISK_MAX_DRAWDOWN_PCT,
+    max_consecutive_losses=Config.RISK_MAX_CONSECUTIVE_LOSSES,
+    starting_balance=Config.STARTING_BALANCE,
+))
 
 
 # ============================================
@@ -418,6 +431,21 @@ def oanda_trades():
         return jsonify({"error": "OANDA request failed"}), 502
 
 
+@app.route("/api/risk/status", methods=["GET"])
+@require_auth
+def risk_status():
+    return jsonify({"success": True, "risk": breaker.status(state.get_account())})
+
+
+@app.route("/api/risk/reset", methods=["POST"])
+@require_auth
+def risk_reset():
+    if breaker.reset():
+        send_alert("✅ Circuit breaker reset", f"by user {g.user_id}", alert_type="info")
+        return jsonify({"success": True, "reset": True})
+    return jsonify({"success": True, "reset": False, "message": "Breaker was not tripped"})
+
+
 @app.route("/api/oanda/import-history", methods=["POST"])
 @require_auth
 def oanda_import_history():
@@ -520,7 +548,18 @@ def ea_account_update():
         open_trades=data.get("open_trades", 0),
     )
     socketio.emit("account_update", account, room="app")
+    _evaluate_breaker(account)
     return jsonify({"success": True})
+
+
+def _evaluate_breaker(account: dict[str, Any]) -> None:
+    reason = breaker.evaluate(account)
+    if reason and not breaker.is_tripped():
+        breaker.trip(
+            reason,
+            enqueue=state.enqueue_ea_command,
+            alert=lambda title, msg: send_alert(title, msg, alert_type="emergency"),
+        )
 
 
 @app.route("/webhook/ea/trade/open", methods=["POST"])
@@ -591,6 +630,7 @@ def ea_trade_closed():
         return jsonify({"success": False, "error": "Trade not found"}), 404
 
     history.record_close(trade)
+    _evaluate_breaker(state.get_account())
 
     is_profit = pnl >= 0
     alert = new_alert(

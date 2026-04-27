@@ -268,6 +268,35 @@ def test_oanda_import_history_writes_to_sqlite(server):
         assert history_res["trades"][0]["pnl"] == 5.0
 
 
+def test_circuit_breaker_trips_after_losing_close(server, ea_headers, auth_headers):
+    server.app.config["TESTING"] = True
+    server.breaker.config = server.BreakerConfig(
+        daily_loss_pct=1.0, max_drawdown_pct=0,
+        max_consecutive_losses=0, starting_balance=10_000,
+    )
+
+    with server.app.test_client() as c:
+        c.post("/webhook/ea/trade/open", headers=ea_headers,
+               json={"ticket": "BR1", "symbol": "X", "type": "BUY", "lots": 0.1, "entry": 100})
+        c.post("/webhook/ea/trade/close", headers=ea_headers,
+               json={"ticket": "BR1", "pnl": -150, "close_price": 99})
+
+        # Breaker should be tripped now
+        status = c.get("/api/risk/status", headers=auth_headers).get_json()
+        assert status["risk"]["tripped"] is True
+
+        # Stop command queued for the EA
+        drained = c.post("/webhook/ea/heartbeat", headers=ea_headers, json={}).get_json()
+        actions = [cmd["action"] for cmd in drained["commands"]]
+        assert "stop" in actions
+
+        # Reset clears it
+        reset = c.post("/api/risk/reset", headers=auth_headers).get_json()
+        assert reset["reset"] is True
+        status = c.get("/api/risk/status", headers=auth_headers).get_json()
+        assert status["risk"]["tripped"] is False
+
+
 def test_alerts_endpoint(client, ea_headers, auth_headers):
     client.post("/webhook/ea/trade/open",
                 headers=ea_headers,
