@@ -827,12 +827,13 @@ def handle_leave_ea():
 # ============================================
 
 
-def _socket_emit(event: str, payload: Any) -> None:
-    socketio.emit(event, payload, room="app")
+def _account_synced(account: dict[str, Any]) -> None:
+    socketio.emit("account_update", account, room="app")
+    _evaluate_breaker(account)
 
 
 if os.environ.get("DISABLE_OANDA_POLLER") != "1":
-    oanda_poller.start(oanda, state, _socket_emit)
+    oanda_poller.start(oanda, state, _account_synced)
 
 
 if __name__ == "__main__":

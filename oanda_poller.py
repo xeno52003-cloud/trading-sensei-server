@@ -27,10 +27,15 @@ EA_GRACE_SECONDS = 30
 def start(
     oanda: OandaClient,
     state: AppState,
-    emit: Callable[[str, Any], None],
+    on_account: Callable[[dict[str, Any]], None],
     interval: int = 30,
 ) -> threading.Thread | None:
-    """Start the poller in a daemon thread. No-op if OANDA isn't configured."""
+    """Start the poller in a daemon thread. No-op if OANDA isn't configured.
+
+    `on_account` is invoked with the freshly written account snapshot after
+    each successful poll. Callers typically broadcast it over Socket.IO and
+    feed it through the risk circuit breaker.
+    """
     if not oanda.configured:
         logger.info("OANDA poller: not started (client not configured)")
         return None
@@ -48,7 +53,7 @@ def start(
                                 "unrealized_pnl", "total_pnl", "open_trades",
                             )
                         })
-                        emit("account_update", state.get_account())
+                        on_account(state.get_account())
                 except requests.RequestException as e:
                     logger.warning("OANDA poller: request failed: %s", e)
                 except Exception:

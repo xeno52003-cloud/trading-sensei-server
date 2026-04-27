@@ -166,6 +166,26 @@ button { cursor: pointer; border: none; background: none; }
 .nav-icon { font-size: 22px; }
 .nav-label { font-size: 10px; font-weight: 500; }
 
+/* --- breaker banner --- */
+.breaker-banner {
+  margin: 0 16px 12px;
+  padding: 14px 16px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid var(--loss);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.breaker-icon { font-size: 22px; }
+.breaker-body { flex: 1; min-width: 0; }
+.breaker-title { font-size: 14px; font-weight: 700; color: var(--loss); }
+.breaker-reason { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.breaker-reset {
+  background: var(--loss); color: var(--text);
+  padding: 8px 14px; border-radius: 10px; font-size: 13px; font-weight: 600;
+}
+
 /* --- toast --- */
 .toast {
   position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);

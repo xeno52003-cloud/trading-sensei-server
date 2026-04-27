@@ -156,13 +156,14 @@ function logout() {
 
 async function refreshAll() {
   try {
-    const [account, trades, history, alerts, status, summary] = await Promise.all([
+    const [account, trades, history, alerts, status, summary, risk] = await Promise.all([
       api("/api/account"),
       api("/api/trades"),
       api("/api/trades/history?limit=20"),
       api("/api/alerts?limit=20"),
       api("/api/status"),
       api("/api/analytics/summary"),
+      api("/api/risk/status"),
     ]);
     state.account = account.account;
     state.trades = trades.trades;
@@ -170,6 +171,7 @@ async function refreshAll() {
     state.alerts = alerts.alerts;
     state.ea = status;
     state.summary = summary.summary;
+    state.risk = risk.risk;
 
     // Fallback to OANDA REST when the EA isn't pushing state
     if (!status.ea_connected && status.oanda_configured) {
@@ -233,6 +235,15 @@ async function closeAll() {
   } catch (e) { toast(e.message, "error"); }
 }
 
+async function resetBreaker() {
+  if (!confirm("Reset the circuit breaker? Trading will resume after the EA receives the next start command.")) return;
+  try {
+    await api("/api/risk/reset", { method: "POST" });
+    toast("Circuit breaker reset", "success");
+    refreshAll();
+  } catch (e) { toast(e.message, "error"); }
+}
+
 async function closeTrade(id) {
   if (!confirm("Close this trade?")) return;
   try {
@@ -269,6 +280,18 @@ function renderShell() {
     el("div", { class: `conn-dot ${dot}` }),
     el("span", {}, label)
   ));
+
+  if (state.risk?.tripped) {
+    const reason = state.risk.tripped_at?.reason || "Risk limit reached";
+    root.appendChild(el("div", { class: "breaker-banner" },
+      el("div", { class: "breaker-icon" }, "🚨"),
+      el("div", { class: "breaker-body" },
+        el("div", { class: "breaker-title" }, "Circuit breaker tripped"),
+        el("div", { class: "breaker-reason" }, reason)
+      ),
+      el("button", { class: "breaker-reset", onclick: resetBreaker }, "Reset")
+    ));
+  }
 
   root.appendChild(el("div", { id: "tab-content" }));
 
@@ -498,6 +521,7 @@ function renderAnalytics(root) {
   ));
   drawEquity(s.equity_curve);
 
+  const r = state.risk;
   const metrics = [
     ["Win Rate", `${s.win_rate}%`, s.win_rate >= 50 ? "profit" : "loss"],
     ["Profit Factor", fmtNumber(s.profit_factor, 2), s.profit_factor >= 1.5 ? "profit" : ""],
@@ -507,6 +531,12 @@ function renderAnalytics(root) {
     ["Largest Loss", fmtMoney(s.largest_loss), "loss"],
     ["Max Drawdown", `${s.max_drawdown_pct}%`, s.max_drawdown_pct < 10 ? "profit" : "loss"],
     ["Avg Trade", fmtMoney(s.avg_trade), s.avg_trade >= 0 ? "profit" : "loss"],
+    ...(r ? [
+      ["Today's P&L", fmtMoney(r.today_pnl, { sign: true }), r.today_pnl >= 0 ? "profit" : "loss"],
+      ["Losing Streak", String(r.losing_streak), r.losing_streak >= 3 ? "loss" : ""],
+      ["Peak Balance", fmtMoney(r.peak_balance), ""],
+      ["Risk Status", r.tripped ? "Tripped" : "OK", r.tripped ? "loss" : "profit"],
+    ] : []),
   ];
   root.appendChild(el("div", { class: "card" },
     el("div", { class: "metrics-grid" },
