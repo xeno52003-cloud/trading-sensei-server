@@ -837,6 +837,10 @@ def _account_synced(account: dict[str, Any]) -> None:
     _evaluate_breaker(account)
 
 
+if os.environ.get("DEMO") == "1":
+    import demo_seed
+    demo_seed.seed(state, history)
+
 if os.environ.get("DISABLE_OANDA_POLLER") != "1":
     oanda_poller.start(oanda, state, _account_synced)
 
