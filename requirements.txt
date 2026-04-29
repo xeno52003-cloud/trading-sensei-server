@@ -13,6 +13,7 @@ eventlet==0.34.2
 
 # Authentication
 PyJWT==2.8.0
+bcrypt==4.2.0
 
 # HTTP Client
 requests==2.31.0
@@ -30,3 +31,6 @@ gevent-websocket==0.10.1
 
 # Utilities
 python-dateutil==2.8.2
+
+# Testing (dev)
+pytest==8.3.3
