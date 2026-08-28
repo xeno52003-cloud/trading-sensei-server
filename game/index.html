@@ -308,6 +308,7 @@ function resetPlayer() {
     fireCd: 0, dashCd: 0, rageCd: 0,
     dashT: 0, dashDx: 0, dashDy: 0, dashHit: null,
     rageT: 0, inv: 0, hurtT: 0,
+    attackTarget: null, moveTo: null,
     gold: 0, gems: 0, alive: true, deadT: 0,
   });
   P.dashHit = new Set();
@@ -812,9 +813,16 @@ function collideWorld(o, radius) {
 // ---------- input ----------
 const keys = {};
 const mouse = { x: 0, y: 0, seen: false };
+const mouseHold = { active: false };
+// real mouse+keyboard rig? decided once, not from synthetic events mobile browsers emit after taps
+const FINE = window.matchMedia('(hover:hover) and (pointer:fine)');
+// keep keyboard focus on the game even when it runs inside an embedding frame
+document.body.tabIndex = -1;
+window.addEventListener('pointerdown', () => { try { window.focus(); document.body.focus(); } catch (err) {} }, true);
+window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseHold.active = false; });
 window.addEventListener('keydown', e => {
   keys[e.code] = true;
-  if (e.code === 'Space') e.preventDefault();
+  if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
   if (S.mode === 'title' && (e.code === 'Enter' || e.code === 'Space')) { startGame(); return; }
   if (S.mode === 'dead' && (e.code === 'Enter' || e.code === 'Space')) { retryStage(); return; }
   if (S.mode !== 'play') return;
@@ -828,14 +836,33 @@ window.addEventListener('keyup', e => { keys[e.code] = false; });
 function moveX() { return (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0); }
 function moveY() { return (keys.KeyS || keys.ArrowDown ? 1 : 0) - (keys.KeyW || keys.ArrowUp ? 1 : 0); }
 
-// mouse aim (desktop): hero faces the cursor; LMB attacks toward it, RMB dashes toward it
+// mouse aim (desktop): hero faces the cursor; click-to-move, click-a-foe-to-attack
+function screenToWorld(sx, sy) {
+  return { x: sx + cam.x - W / 2, y: sy + cam.y - H / 2 };
+}
 function aimAngle() {
-  const ox = -cam.x + W / 2, oy = -cam.y + H / 2;
-  return Math.atan2(mouse.y - (P.y + oy), mouse.x - (P.x + ox));
+  const w = screenToWorld(mouse.x, mouse.y);
+  return Math.atan2(w.y - P.y, w.x - P.x);
+}
+function targetNear(x, y, radius) {
+  let best = null, bd = radius * radius;
+  for (const e of enemies) {
+    const d = dist2(x, y, e.x, e.y);
+    if (d < bd) { bd = d; best = e; }
+  }
+  if (!best) for (const p of props) {
+    if (p.dead) continue;
+    const d = dist2(x, y, p.x, p.y);
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
 }
 window.addEventListener('mousemove', e => {
+  if (!FINE.matches) return; // ignore synthetic mouse events on touch devices
   mouse.x = e.clientX; mouse.y = e.clientY; mouse.seen = true;
-  if (!document.body.classList.contains('desktop')) document.body.classList.add('desktop');
+});
+window.addEventListener('pointerup', e => {
+  if (e.pointerType === 'mouse' && e.button === 0) mouseHold.active = false;
 });
 cv.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -846,42 +873,69 @@ cv.addEventListener('pointerdown', e => {
   if (S.mode !== 'play') return;
   if (e.pointerType === 'mouse') {
     initAudio();
-    if (e.button === 0) tryBasicAttack(aimAngle());
-    else if (e.button === 2) { const a = aimAngle(); tryDash(Math.cos(a), Math.sin(a)); }
+    mouse.x = e.clientX; mouse.y = e.clientY; mouse.seen = true;
+    if (e.button === 0) {
+      const w = screenToWorld(e.clientX, e.clientY);
+      const tgt = targetNear(w.x, w.y, 60);
+      mouseHold.active = true;
+      if (tgt) { P.attackTarget = tgt; P.moveTo = null; }
+      else { P.attackTarget = null; P.moveTo = { x: w.x, y: w.y }; }
+    } else if (e.button === 2) { const a = aimAngle(); tryDash(Math.cos(a), Math.sin(a)); }
     e.preventDefault();
     return;
   }
-  if (stick.active) return;
-  stick.active = true; stick.id = e.pointerId;
-  stick.ox = e.clientX; stick.oy = e.clientY; stick.dx = 0; stick.dy = 0;
-  stickBase.style.display = 'block';
-  stickBase.style.left = (e.clientX - 55) + 'px'; stickBase.style.top = (e.clientY - 55) + 'px';
-  stickKnob.style.display = 'block';
-  stickKnob.style.left = (e.clientX - 26) + 'px'; stickKnob.style.top = (e.clientY - 26) + 'px';
+  startStick(e.pointerId, e.clientX, e.clientY);
   try { cv.setPointerCapture(e.pointerId); } catch (err) {}
   e.preventDefault();
 });
-cv.addEventListener('pointermove', e => {
-  if (!stick.active || e.pointerId !== stick.id) return;
-  let dx = e.clientX - stick.ox, dy = e.clientY - stick.oy;
+function startStick(id, x, y) {
+  if (stick.active) return;
+  stick.active = true; stick.id = id;
+  stick.ox = x; stick.oy = y; stick.dx = 0; stick.dy = 0;
+  stickBase.style.display = 'block';
+  stickBase.style.left = (x - 55) + 'px'; stickBase.style.top = (y - 55) + 'px';
+  stickKnob.style.display = 'block';
+  stickKnob.style.left = (x - 26) + 'px'; stickKnob.style.top = (y - 26) + 'px';
+}
+function moveStick(id, x, y) {
+  if (!stick.active || id !== stick.id) return;
+  let dx = x - stick.ox, dy = y - stick.oy;
   const len = Math.hypot(dx, dy), max = 48;
   if (len > max) { dx = dx / len * max; dy = dy / len * max; }
   stick.dx = dx / max; stick.dy = dy / max;
   stickKnob.style.left = (stick.ox + dx - 26) + 'px'; stickKnob.style.top = (stick.oy + dy - 26) + 'px';
-  e.preventDefault();
-});
-function endStick(e) {
-  if (!stick.active || (e && e.pointerId !== stick.id)) return;
+}
+function endStick(id) {
+  if (!stick.active || (id !== undefined && id !== stick.id)) return;
   stick.active = false; stick.dx = 0; stick.dy = 0;
   stickBase.style.display = 'none'; stickKnob.style.display = 'none';
 }
-cv.addEventListener('pointerup', endStick);
-cv.addEventListener('pointercancel', endStick);
+cv.addEventListener('pointermove', e => { moveStick(e.pointerId, e.clientX, e.clientY); if (stick.active && e.pointerId === stick.id) e.preventDefault(); });
+cv.addEventListener('pointerup', e => endStick(e.pointerId));
+cv.addEventListener('pointercancel', e => endStick(e.pointerId));
+// touch fallback for browsers without pointer events (some in-app browsers)
+if (!window.PointerEvent) {
+  cv.addEventListener('touchstart', e => {
+    if (S.mode !== 'play') return;
+    const t = e.changedTouches[0];
+    startStick(t.identifier, t.clientX, t.clientY);
+    e.preventDefault();
+  }, { passive: false });
+  cv.addEventListener('touchmove', e => {
+    for (const t of e.changedTouches) moveStick(t.identifier, t.clientX, t.clientY);
+    e.preventDefault();
+  }, { passive: false });
+  const endTouch = e => { for (const t of e.changedTouches) endStick(t.identifier); };
+  cv.addEventListener('touchend', endTouch);
+  cv.addEventListener('touchcancel', endTouch);
+}
 
 // skill buttons
 function bindBtn(id, fn) {
   const b = document.getElementById(id);
-  b.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); initAudio(); fn(); });
+  const handler = e => { e.preventDefault(); e.stopPropagation(); initAudio(); fn(); };
+  if (window.PointerEvent) b.addEventListener('pointerdown', handler);
+  else { b.addEventListener('touchstart', handler, { passive: false }); b.addEventListener('mousedown', handler); }
   b.addEventListener('contextmenu', e => e.preventDefault());
   return b;
 }
@@ -1202,8 +1256,33 @@ function update(dt) {
   // --- player ---
   if (P.alive) {
     let mx = moveX() + stick.dx, my = moveY() + stick.dy;
-    const ml = Math.hypot(mx, my);
+    let ml = Math.hypot(mx, my);
     if (ml > 1) { mx /= ml; my /= ml; }
+    // direct input overrides mouse orders
+    if (ml > 0.12) { P.moveTo = null; if (!mouseHold.active) P.attackTarget = null; }
+    // holding LMB on open ground: steer toward the cursor
+    if (mouseHold.active && !P.attackTarget && mouse.seen) P.moveTo = screenToWorld(mouse.x, mouse.y);
+    // ordered onto a foe or crate: close in, then swing
+    if (ml <= 0.12 && P.attackTarget) {
+      const t = P.attackTarget;
+      if (t.dead || t.hp <= 0) P.attackTarget = null;
+      else {
+        const d = Math.sqrt(dist2(P.x, P.y, t.x, t.y)) || 1;
+        const reach = 52 + (t.r || 14);
+        if (d > reach) { mx = (t.x - P.x) / d; my = (t.y - P.y) / d; ml = 1; }
+        else {
+          const a = Math.atan2(t.y - P.y, t.x - P.x);
+          P.face = a; tryBasicAttack(a);
+          if (!mouseHold.active) P.attackTarget = null;
+        }
+      }
+    }
+    // ordered to a point: walk there
+    if (ml <= 0.12 && P.moveTo) {
+      const d = Math.sqrt(dist2(P.x, P.y, P.moveTo.x, P.moveTo.y));
+      if (d > 16) { mx = P.moveTo.x - P.x; my = P.moveTo.y - P.y; mx /= d; my /= d; ml = 1; }
+      else P.moveTo = null;
+    }
     P.moving = ml > 0.12;
     const spd = P.spd * (P.rageT > 0 ? 1.3 : 1);
     if (P.dashT > 0) {
@@ -1447,6 +1526,14 @@ function render() {
       cx.beginPath(); cx.arc(portal.x + Math.cos(a) * 26, portal.y + Math.sin(a) * 26 * 0.6, 3, 0, TAU); cx.fill();
     }
   }
+  // click-to-move destination marker
+  if (S.mode === 'play' && P.alive && P.moveTo) {
+    const pu = 0.55 + 0.35 * Math.sin(S.time * 9);
+    cx.strokeStyle = `rgba(125,232,122,${pu})`; cx.lineWidth = 2.5;
+    cx.beginPath(); cx.ellipse(P.moveTo.x, P.moveTo.y, 13, 8, 0, 0, TAU); cx.stroke();
+    cx.strokeStyle = `rgba(210,255,200,${pu * 0.7})`; cx.lineWidth = 1.5;
+    cx.beginPath(); cx.ellipse(P.moveTo.x, P.moveTo.y, 6 + 3 * Math.sin(S.time * 9), 4, 0, 0, TAU); cx.stroke();
+  }
   // telegraphs
   for (const tg of telegraphs) {
     const p = tg.t / tg.dur;
@@ -1632,6 +1719,7 @@ function retryStage() {
   P.alive = true; P.deadT = 0;
   P.hp = P.maxHp; P.mp = P.maxMp;
   P.inv = 0; P.rageT = 0; P.dashT = 0; P.z = 0; P.vz = 0;
+  P.attackTarget = null; P.moveTo = null;
   generateStage();
   P.x = WORLD.w / 2; P.y = WORLD.h - 260;
   cam.x = P.x; cam.y = P.y - 40;
@@ -1653,13 +1741,18 @@ function showDeath() {
   el('deathScreen').style.display = '';
   el('overlay').classList.remove('hidden');
 }
-el('playBtn').addEventListener('pointerdown', e => { e.preventDefault(); startGame(); });
-el('retryBtn').addEventListener('pointerdown', e => { e.preventDefault(); retryStage(); });
+// click works everywhere; pointerdown makes it feel instant where supported
+el('playBtn').addEventListener('click', () => { if (S.mode === 'title') startGame(); });
+el('retryBtn').addEventListener('click', () => { if (S.mode === 'dead') retryStage(); });
+if (window.PointerEvent) {
+  el('playBtn').addEventListener('pointerdown', e => { e.preventDefault(); if (S.mode === 'title') startGame(); });
+  el('retryBtn').addEventListener('pointerdown', e => { e.preventDefault(); if (S.mode === 'dead') retryStage(); });
+}
 if (S.best > 0) el('bestLine').textContent = 'Best run: stage ' + S.best;
-const isTouch = 'ontouchstart' in window && !window.matchMedia('(pointer:fine)').matches;
+const isTouch = !FINE.matches;
 el('ctrlHint').innerHTML = isTouch
   ? 'Drag anywhere to move · Tap skills to strike and leap'
-  : '<b>WASD</b> move · <b>Mouse</b> aim · <b>Click</b> attack · <b>Right-click / Shift</b> dash<br><b>Space</b> jump · <b>Q</b> flame nova · <b>E</b> battle fury';
+  : '<b>Click</b> to move — click a foe to attack it · <b>WASD</b> also moves<br><b>Right-click / Shift</b> dash · <b>Space</b> jump · <b>Q</b> flame nova · <b>E</b> battle fury';
 if (!isTouch) document.body.classList.add('desktop');
 
 // ---------- main loop ----------
